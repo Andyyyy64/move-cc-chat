@@ -1,11 +1,58 @@
 #!/usr/bin/env node
 import { randomBytes } from 'node:crypto';
+import { statSync } from 'node:fs';
+import { basename } from 'node:path';
 import { Command } from 'commander';
+import * as p from '@clack/prompts';
 import { listSessions, getSessionFiles, getClaudeDir } from './session.js';
+import type { SessionMeta } from './session.js';
 import { packSession } from './pack.js';
 import { unpackSession } from './unpack.js';
 import { generateTransferCode, parseTransferCode, encrypt, decrypt } from './crypto.js';
 import { uploadToGist, downloadFromGist, deleteGist } from './transport.js';
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function getConversationSize(claudeDir: string, session: SessionMeta): number {
+  const files = getSessionFiles(claudeDir, session);
+  try {
+    return statSync(files.conversationPath).size;
+  } catch {
+    return 0;
+  }
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+function formatSessionLabel(s: SessionMeta, claudeDir: string): string {
+  const id = s.sessionId.slice(0, 8);
+  const date = new Date(s.startedAt).toLocaleString();
+  const project = basename(s.cwd);
+  const size = formatSize(getConversationSize(claudeDir, s));
+  const alive = isProcessAlive(s.pid);
+  const status = alive ? ' [ACTIVE]' : '';
+  return `${id}  ${date}  ${project} (${size})${status}`;
+}
+
+async function pushSession(session: SessionMeta, claudeDir: string): Promise<{ code: string; sessionId: string }> {
+  const bundle = packSession(claudeDir, session);
+  const key = randomBytes(32);
+  const encrypted = encrypt(bundle, key);
+  const gistId = uploadToGist(encrypted);
+  const { code } = generateTransferCode(gistId, key);
+  return { code, sessionId: session.sessionId };
+}
 
 const program = new Command();
 
@@ -17,60 +64,86 @@ program
 program
   .command('push')
   .description('Send a chat session to another machine')
-  .option('-s, --session <id>', 'Session ID to push (default: most recent)')
+  .option('-s, --session <id>', 'Session ID to push (default: interactive)')
   .action(async (opts) => {
     const claudeDir = getClaudeDir();
     const sessions = listSessions(claudeDir);
 
     if (sessions.length === 0) {
-      console.error('No Claude Code sessions found.');
+      p.log.error('No Claude Code sessions found.');
       process.exit(1);
     }
 
-    let session;
+    let selectedSessions: SessionMeta[];
+
     if (opts.session) {
-      session = sessions.find(s => s.sessionId === opts.session || s.sessionId.startsWith(opts.session));
+      // 直接指定
+      const session = sessions.find(s => s.sessionId === opts.session || s.sessionId.startsWith(opts.session));
       if (!session) {
-        console.error(`Session not found: ${opts.session}`);
+        p.log.error(`Session not found: ${opts.session}`);
         process.exit(1);
       }
+      selectedSessions = [session];
+    } else if (sessions.length === 1) {
+      // 1つしかないならそのまま
+      selectedSessions = [sessions[0]];
     } else {
-      session = sessions[0];
+      // TUIで選択
+      p.intro('move-chat push');
+
+      const selected = await p.multiselect({
+        message: 'Select sessions to push (space to select, enter to confirm)',
+        options: sessions.slice(0, 30).map(s => ({
+          value: s.sessionId,
+          label: formatSessionLabel(s, claudeDir),
+        })),
+        required: true,
+      });
+
+      if (p.isCancel(selected)) {
+        p.cancel('Cancelled.');
+        process.exit(0);
+      }
+
+      selectedSessions = sessions.filter(s => (selected as string[]).includes(s.sessionId));
     }
 
-    console.log(`Packing session ${session.sessionId.slice(0, 8)}...`);
-    console.log(`  Project: ${session.cwd}`);
-    console.log(`  Started: ${new Date(session.startedAt).toLocaleString()}`);
+    // push各セッション
+    const results: { session: SessionMeta; code: string }[] = [];
 
-    // 1. Pack
-    const bundle = packSession(claudeDir, session);
-    console.log(`  Bundle size: ${(bundle.length / 1024).toFixed(1)} KB`);
+    const spinner = p.spinner();
+    for (const session of selectedSessions) {
+      const label = `${session.sessionId.slice(0, 8)} (${basename(session.cwd)})`;
+      spinner.start(`Pushing ${label}...`);
 
-    // 2. Generate key
-    const key = randomBytes(32);
+      try {
+        const { code } = await pushSession(session, claudeDir);
+        results.push({ session, code });
+        spinner.stop(`Pushed ${label}`);
+      } catch (err) {
+        spinner.stop(`Failed to push ${label}: ${err}`);
+      }
+    }
 
-    // 3. Encrypt
-    console.log('Encrypting...');
-    const encrypted = encrypt(bundle, key);
+    // 結果表示
+    if (results.length === 0) {
+      p.log.error('No sessions were pushed.');
+      process.exit(1);
+    }
 
-    // 4. Upload
-    console.log('Uploading to GitHub Gist...');
-    const gistId = uploadToGist(encrypted);
+    p.note(
+      results.map(r => {
+        const id = r.session.sessionId.slice(0, 8);
+        const project = basename(r.session.cwd);
+        return [
+          `${id} (${project})`,
+          `  move-chat pull ${r.code}`,
+        ].join('\n');
+      }).join('\n\n'),
+      'Transfer codes',
+    );
 
-    // 5. Build transfer code: words + keyHex + gistId
-    const { code } = generateTransferCode(gistId, key);
-
-    console.log('');
-    console.log('='.repeat(50));
-    console.log('  Transfer code:');
-    console.log('');
-    console.log(`    ${code}`);
-    console.log('');
-    console.log('  On the other machine, run:');
-    console.log(`    move-chat pull ${code}`);
-    console.log('='.repeat(50));
-    console.log('');
-    console.log('The gist will be auto-deleted after pull.');
+    p.outro(`${results.length} session(s) pushed. Gists will be auto-deleted after pull.`);
   });
 
 program
@@ -79,33 +152,41 @@ program
   .argument('<code>', 'Transfer code from push command')
   .option('--cwd <path>', 'Override project directory on this machine')
   .action(async (code: string, opts) => {
-    console.log('Parsing transfer code...');
+    p.intro('move-chat pull');
+
+    const spinner = p.spinner();
+
+    spinner.start('Downloading...');
     const { key, gistId } = parseTransferCode(code);
-
-    console.log('Downloading from GitHub Gist...');
     const encrypted = downloadFromGist(gistId);
+    spinner.stop('Downloaded.');
 
-    console.log('Decrypting...');
+    spinner.start('Decrypting and unpacking...');
     const bundle = decrypt(encrypted, key);
-
     const claudeDir = getClaudeDir();
-    console.log('Unpacking session...');
     const { sessionId, cwd } = unpackSession(claudeDir, bundle, opts.cwd ?? null);
+    spinner.stop('Unpacked.');
 
-    console.log('Cleaning up gist...');
+    spinner.start('Cleaning up gist...');
     try {
       deleteGist(gistId);
+      spinner.stop('Gist deleted.');
     } catch {
-      console.log('  (Could not delete gist — you may want to delete it manually)');
+      spinner.stop('Could not delete gist — delete it manually.');
     }
 
-    console.log('');
-    console.log('Session imported successfully!');
-    console.log(`  Session ID: ${sessionId}`);
-    console.log(`  Project: ${cwd}`);
-    console.log('');
-    console.log('Resume with:');
-    console.log(`  claude --resume ${sessionId}`);
+    p.note(
+      [
+        `Session ID: ${sessionId}`,
+        `Project:    ${cwd}`,
+        '',
+        `Resume with:`,
+        `  claude --resume ${sessionId}`,
+      ].join('\n'),
+      'Session imported',
+    );
+
+    p.outro('Done!');
   });
 
 program
@@ -120,10 +201,27 @@ program
       return;
     }
 
-    console.log('Recent Claude Code sessions:\n');
-    for (const s of sessions.slice(0, 20)) {
-      const date = new Date(s.startedAt).toLocaleString();
-      console.log(`  ${s.sessionId.slice(0, 8)}  ${date}  ${s.cwd}`);
+    // cwdでグルーピング
+    const grouped = new Map<string, SessionMeta[]>();
+    for (const s of sessions) {
+      const existing = grouped.get(s.cwd) ?? [];
+      existing.push(s);
+      grouped.set(s.cwd, existing);
+    }
+
+    console.log('');
+    for (const [cwd, cwdSessions] of grouped) {
+      const project = basename(cwd);
+      console.log(`  ${project} (${cwd})`);
+      for (const s of cwdSessions) {
+        const id = s.sessionId.slice(0, 8);
+        const date = new Date(s.startedAt).toLocaleString();
+        const size = formatSize(getConversationSize(claudeDir, s));
+        const alive = isProcessAlive(s.pid);
+        const status = alive ? ' [ACTIVE]' : '';
+        console.log(`    ${id}  ${date}  ${size}${status}`);
+      }
+      console.log('');
     }
   });
 

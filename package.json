@@ -14,13 +14,14 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@clack/prompts": "^1.1.0",
     "commander": "^13.1.0"
   },
   "devDependencies": {
-    "typescript": "^5.7.0",
+    "@types/node": "^20.0.0",
     "tsx": "^4.19.0",
-    "vitest": "^3.0.0",
-    "@types/node": "^20.0.0"
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
   },
   "engines": {
     "node": ">=20.0.0"
