@@ -154,17 +154,14 @@ program
       process.exit(1);
     }
 
-    p.note(
-      results.map(r => {
-        const id = r.session.sessionId.slice(0, 8);
-        const project = basename(r.session.cwd);
-        return [
-          `${id} (${project})`,
-          `  move-chat pull ${r.code}`,
-        ].join('\n');
-      }).join('\n\n'),
-      'Transfer codes',
-    );
+    console.log('');
+    for (const r of results) {
+      const id = r.session.sessionId.slice(0, 8);
+      const project = basename(r.session.cwd);
+      p.log.success(`${id} (${project})`);
+      console.log(`  move-chat pull ${r.code}`);
+      console.log('');
+    }
 
     p.outro(`${results.length} session(s) pushed. Gists will be auto-deleted after pull.`);
   });
@@ -199,16 +196,12 @@ program
         spinner.stop('Could not delete gist — delete it manually.');
       }
 
-      p.note(
-        [
-          `Session ID: ${sessionId}`,
-          `Project:    ${cwd}`,
-          '',
-          `Resume with:`,
-          `  cd ${cwd} && claude --resume ${sessionId}`,
-        ].join('\n'),
-        'Session imported',
-      );
+      p.log.success('Session imported!');
+      console.log(`  Session ID: ${sessionId}`);
+      console.log(`  Project:    ${cwd}`);
+      console.log('');
+      console.log('  Resume with:');
+      console.log(`  cd ${cwd} && claude --resume ${sessionId}`);
 
       p.outro('Done!');
     } catch (err) {
