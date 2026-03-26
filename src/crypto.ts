@@ -1,48 +1,27 @@
 import { randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
 
-const WORDS = [
-  'ace','add','age','ago','aid','aim','air','all','and','ant',
-  'any','ape','arc','are','ark','arm','art','ash','ask','ate',
-  'awe','axe','bad','bag','ban','bar','bat','bay','bed','bee',
-  'bet','big','bit','bow','box','boy','bud','bug','bus','but',
-  'buy','cab','cam','can','cap','car','cat','cop','cow','cry',
-  'cub','cup','cur','cut','dad','dam','day','den','dew','did',
-  'dig','dim','dip','dog','dot','dry','dub','dud','due','dug',
-  'dun','duo','dye','ear','eat','eel','egg','ego','elm','emu',
-  'end','era','eve','ewe','eye','fan','far','fat','fax','fed',
-  'fee','few','fig','fin','fir','fit','fix','fly','foe','fog',
-  'for','fox','fry','fun','fur','gag','gap','gas','gel','gem',
-  'get','gin','gnu','god','got','gum','gun','gut','guy','gym',
-  'had','ham','has','hat','hay','hen','her','hew','hex','hid',
-  'him','hip','his','hit','hog','hop','hot','how','hub','hue',
-  'hug','hum','hut','ice','icy','ill','imp','ink','inn','ion',
-  'ire','irk','ivy','jab','jag','jam','jar','jaw','jay','jet',
-  'jig','job','jog','jot','joy','jug','jut','keg','ken','key',
-  'kid','kin','kit','lab','lad','lag','lap','law','lay','lea',
-  'led','leg','let','lid','lie','lip','lit','log','lot','low',
-  'lug','mad','man','map','mat','maw','max','may','men','met',
-  'mid','mix','mob','mod','mom','mop','mow','mud','mug','nab',
-  'nag','nap','net','new','nil','nit','nod','nor','not','now',
-  'nun','nut','oak','oar','oat','odd','ode','off','oft','ohm',
-  'oil','old','one','opt','orb','ore','our','out','owe','owl',
-  'own','pad','pan','paw','pay','pea','peg','pen','per','pet',
-  'pie','pig','pin','pit','ply','pod',
-];
-
 /**
  * Generate a transfer code that encodes both the encryption key and gist ID.
- * Format: word1-word2-word3-{keyHex}{gistId}
+ *
+ * Format: mc_{base64url(key(32 bytes) + gistIdBytes(16 bytes))}
+ * Total: 3 + 64 = 67 chars (gist IDが32 hex charsの場合)
+ *
+ * gist IDが非hex or 奇数長の場合はフォールバック:
+ * mc_{base64url(key(32 bytes))}.{gistId}
  */
 export function generateTransferCode(gistId: string, existingKey?: Buffer): { code: string; key: Buffer } {
   const key = existingKey ?? randomBytes(32);
 
-  const w1 = WORDS[key[0] % WORDS.length];
-  const w2 = WORDS[key[1] % WORDS.length];
-  const w3 = WORDS[key[2] % WORDS.length];
+  // gist IDが32 hex charsならバイナリに圧縮して1つのbase64urlに
+  if (/^[0-9a-f]+$/.test(gistId) && gistId.length % 2 === 0) {
+    const gistBytes = Buffer.from(gistId, 'hex');
+    const payload = Buffer.concat([key, Buffer.from([gistBytes.length]), gistBytes]);
+    const code = `mc_${payload.toString('base64url')}`;
+    return { code, key };
+  }
 
-  const keyHex = key.toString('hex');
-  const code = `${w1}-${w2}-${w3}-${keyHex}${gistId}`;
-
+  // フォールバック: dot区切り
+  const code = `mc_${key.toString('base64url')}.${gistId}`;
   return { code, key };
 }
 
@@ -50,20 +29,32 @@ export function generateTransferCode(gistId: string, existingKey?: Buffer): { co
  * Parse a transfer code back into key + gistId.
  */
 export function parseTransferCode(code: string): { key: Buffer; gistId: string } {
-  const parts = code.split('-');
-  if (parts.length < 4) {
+  if (!code.startsWith('mc_')) {
     throw new Error('Invalid transfer code format');
   }
 
-  const tail = parts.slice(3).join('-');
-  const keyHex = tail.slice(0, 64);
-  const gistId = tail.slice(64);
+  const body = code.slice(3); // strip mc_
 
-  const key = Buffer.from(keyHex, 'hex');
-  if (key.length !== 32) {
-    throw new Error('Invalid transfer code: bad key');
+  if (body.includes('.')) {
+    // フォールバック形式: base64url_key.gistId
+    const dotIndex = body.indexOf('.');
+    const key = Buffer.from(body.slice(0, dotIndex), 'base64url');
+    const gistId = body.slice(dotIndex + 1);
+    if (key.length !== 32) throw new Error('Invalid transfer code: bad key');
+    return { key, gistId };
   }
 
+  // コンパクト形式: base64url(key + lengthByte + gistIdBytes)
+  const payload = Buffer.from(body, 'base64url');
+  if (payload.length < 33) throw new Error('Invalid transfer code: too short');
+
+  const key = payload.subarray(0, 32);
+  const gistIdLen = payload[32];
+  const gistBytes = payload.subarray(33, 33 + gistIdLen);
+
+  if (gistBytes.length !== gistIdLen) throw new Error('Invalid transfer code: truncated gist ID');
+
+  const gistId = gistBytes.toString('hex');
   return { key, gistId };
 }
 
