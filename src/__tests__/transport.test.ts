@@ -15,7 +15,7 @@ describe('buildDownloadArgs', () => {
   it('constructs gh gist view command args for raw content', () => {
     const args = buildDownloadArgs('abc123');
     expect(args).toEqual([
-      'gist', 'view', 'abc123', '--raw',
+      'gist', 'view', 'abc123', '--raw', '--filename', 'session.bin',
     ]);
   });
 });

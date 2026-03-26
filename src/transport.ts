@@ -8,7 +8,7 @@ export function buildUploadArgs(filePath: string, description: string): string[]
 }
 
 export function buildDownloadArgs(gistId: string): string[] {
-  return ['gist', 'view', gistId, '--raw'];
+  return ['gist', 'view', gistId, '--raw', '--filename', 'session.bin'];
 }
 
 export function parseGistUrl(urlOrId: string): string {
