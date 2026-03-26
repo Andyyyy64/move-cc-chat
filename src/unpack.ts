@@ -1,5 +1,5 @@
-import { writeFileSync, mkdirSync, appendFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { existsSync, writeFileSync, mkdirSync, appendFileSync } from 'node:fs';
+import { join, dirname, resolve, sep } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { encodeProjectPath } from './session.js';
 import type { BundleManifest } from './pack.js';
@@ -7,6 +7,26 @@ import type { BundleManifest } from './pack.js';
 interface BundleData {
   manifest: BundleManifest;
   files: Record<string, string>;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+function validateManifest(manifest: BundleManifest): void {
+  if (manifest.version !== 1) throw new Error(`Unsupported bundle version: ${manifest.version}`);
+  if (!manifest.sessionId || !UUID_RE.test(manifest.sessionId)) {
+    throw new Error(`Invalid sessionId in bundle: ${manifest.sessionId}`);
+  }
+  if (!manifest.cwd || typeof manifest.cwd !== 'string') {
+    throw new Error('Invalid cwd in bundle');
+  }
+}
+
+function assertNoPathTraversal(targetPath: string, baseDir: string): void {
+  const resolved = resolve(targetPath);
+  const resolvedBase = resolve(baseDir);
+  if (!resolved.startsWith(resolvedBase + sep) && resolved !== resolvedBase) {
+    throw new Error(`Path traversal detected: ${targetPath} escapes ${baseDir}`);
+  }
 }
 
 /**
@@ -17,6 +37,8 @@ export function unpackSession(claudeDir: string, bundle: Buffer, newCwd: string 
   const json = gunzipSync(bundle).toString('utf-8');
   const data: BundleData = JSON.parse(json);
   const { manifest, files } = data;
+
+  validateManifest(manifest);
 
   const effectiveCwd = newCwd ?? manifest.cwd;
   const newEncodedDir = encodeProjectPath(effectiveCwd);
@@ -46,12 +68,21 @@ export function unpackSession(claudeDir: string, bundle: Buffer, newCwd: string 
 
     } else if (relPath.startsWith('subagents/')) {
       const subPath = join(projectDir, manifest.sessionId, relPath.replace('subagents/', ''));
+      // パストラバーサル防止
+      assertNoPathTraversal(subPath, join(projectDir, manifest.sessionId));
       mkdirSync(dirname(subPath), { recursive: true });
       writeFileSync(subPath, content);
     }
   }
 
   return { sessionId: manifest.sessionId, cwd: effectiveCwd };
+}
+
+/**
+ * Check if the target cwd exists on this machine.
+ */
+export function checkCwdExists(cwd: string): boolean {
+  return existsSync(cwd);
 }
 
 /**

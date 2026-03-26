@@ -23,7 +23,7 @@ export function getClaudeDir(): string {
 }
 
 export function encodeProjectPath(absolutePath: string): string {
-  return absolutePath.replace(/\//g, '-') || '-';
+  return absolutePath.replace(/[\\/]/g, '-').replace(/:/g, '') || '-';
 }
 
 export function listSessions(claudeDir?: string): SessionMeta[] {

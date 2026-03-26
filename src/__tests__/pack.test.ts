@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
+import { gzipSync } from 'node:zlib';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { packSession } from '../pack.js';
@@ -74,5 +75,46 @@ describe('pack and unpack round-trip', () => {
 
     const projectDir = join(dstClaudeDir, 'projects', '-home-alice-myproject');
     expect(existsSync(join(projectDir, `${sessionId}.jsonl`))).toBe(true);
+  });
+
+  it('rejects bundles with path traversal in subagent paths', () => {
+    const maliciousBundle = gzipSync(Buffer.from(JSON.stringify({
+      manifest: {
+        version: 1,
+        sessionId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+        projectPath: '/tmp/evil',
+        encodedProjectDir: '-tmp-evil',
+        cwd: '/tmp/evil',
+        pid: 1,
+        startedAt: 1000,
+        createdAt: new Date().toISOString(),
+      },
+      files: {
+        'conversation.jsonl': Buffer.from('{}').toString('base64'),
+        'subagents/../../../etc/evil.txt': Buffer.from('pwned').toString('base64'),
+      },
+    })));
+
+    expect(() => unpackSession(dstClaudeDir, maliciousBundle, '/tmp/safe')).toThrow('Path traversal');
+  });
+
+  it('rejects bundles with invalid sessionId', () => {
+    const maliciousBundle = gzipSync(Buffer.from(JSON.stringify({
+      manifest: {
+        version: 1,
+        sessionId: '../../.ssh',
+        projectPath: '/tmp/evil',
+        encodedProjectDir: '-tmp-evil',
+        cwd: '/tmp/evil',
+        pid: 1,
+        startedAt: 1000,
+        createdAt: new Date().toISOString(),
+      },
+      files: {
+        'conversation.jsonl': Buffer.from('{}').toString('base64'),
+      },
+    })));
+
+    expect(() => unpackSession(dstClaudeDir, maliciousBundle, '/tmp/safe')).toThrow('Invalid sessionId');
   });
 });

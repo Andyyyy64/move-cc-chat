@@ -13,6 +13,16 @@ describe('encodeProjectPath', () => {
   it('handles root path', () => {
     expect(encodeProjectPath('/')).toBe('-');
   });
+
+  it('handles Windows backslash paths', () => {
+    expect(encodeProjectPath('C:\\Users\\alice\\project'))
+      .toBe('C-Users-alice-project');
+  });
+
+  it('handles Windows drive colon', () => {
+    expect(encodeProjectPath('C:\\dev'))
+      .toBe('C-dev');
+  });
 });
 
 describe('listSessions', () => {

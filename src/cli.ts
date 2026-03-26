@@ -10,6 +10,7 @@ import { packSession } from './pack.js';
 import { unpackSession } from './unpack.js';
 import { generateTransferCode, parseTransferCode, encrypt, decrypt } from './crypto.js';
 import { uploadToGist, downloadFromGist, deleteGist } from './transport.js';
+import { checkCwdExists } from './unpack.js';
 
 // Emacs keybind support: Ctrl+N/P/F/B → arrow key equivalents
 // prependListenerでclackより先にkeypressをinterceptし、keyオブジェクトを書き換える
@@ -131,6 +132,8 @@ program
       }
     }
 
+    p.log.warn('Sessions may contain secrets (API keys, passwords, tokens). Data is encrypted in transit but review before sharing.');
+
     // push各セッション
     const results: { session: SessionMeta; code: string }[] = [];
 
@@ -193,12 +196,17 @@ program
         deleteGist(gistId);
         spinner.stop('Gist deleted.');
       } catch {
-        spinner.stop('Could not delete gist — delete it manually.');
+        spinner.stop(`Could not delete gist — delete it manually: https://gist.github.com/${gistId}`);
       }
 
       p.log.success('Session imported!');
       console.log(`  Session ID: ${sessionId}`);
       console.log(`  Project:    ${cwd}`);
+
+      if (!checkCwdExists(cwd)) {
+        p.log.warn(`Directory ${cwd} does not exist on this machine. Use --cwd to specify the correct path.`);
+      }
+
       console.log('');
       console.log('  Resume with:');
       console.log(`  cd ${cwd} && claude --resume ${sessionId}`);
