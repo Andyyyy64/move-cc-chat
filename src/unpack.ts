@@ -36,7 +36,8 @@ export function unpackSession(claudeDir: string, bundle: Buffer, newCwd: string 
       const meta = JSON.parse(content.toString('utf-8'));
       meta.cwd = effectiveCwd;
       meta.pid = 0;
-      writeFileSync(join(claudeDir, 'sessions', '0.json'), JSON.stringify(meta));
+      // sessionIdベースのファイル名で保存（重複回避）
+      writeFileSync(join(claudeDir, 'sessions', `imported-${manifest.sessionId}.json`), JSON.stringify(meta));
 
     } else if (relPath === 'history.jsonl') {
       const rewritten = rewritePaths(content.toString('utf-8'), manifest.cwd, effectiveCwd);

@@ -45,7 +45,16 @@ export function listSessions(claudeDir?: string): SessionMeta[] {
     }
   }
 
-  return sessions.sort((a, b) => b.startedAt - a.startedAt);
+  // sessionIdで重複除去（最新のstartedAtを優先）
+  const deduped = new Map<string, SessionMeta>();
+  for (const s of sessions) {
+    const existing = deduped.get(s.sessionId);
+    if (!existing || s.startedAt > existing.startedAt) {
+      deduped.set(s.sessionId, s);
+    }
+  }
+
+  return [...deduped.values()].sort((a, b) => b.startedAt - a.startedAt);
 }
 
 export function getSessionFiles(claudeDir: string, session: SessionMeta): SessionFiles {
