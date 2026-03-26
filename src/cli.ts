@@ -11,6 +11,19 @@ import { unpackSession } from './unpack.js';
 import { generateTransferCode, parseTransferCode, encrypt, decrypt } from './crypto.js';
 import { uploadToGist, downloadFromGist, deleteGist } from './transport.js';
 
+// Emacs keybind support: Ctrl+N/P/F/B → arrow key equivalents
+// prependListenerでclackより先にkeypressをinterceptし、keyオブジェクトを書き換える
+process.stdin.prependListener('keypress', (_str: string, key: { name: string; ctrl: boolean } | undefined) => {
+  if (key?.ctrl) {
+    switch (key.name) {
+      case 'n': key.name = 'down'; key.ctrl = false; break;
+      case 'p': key.name = 'up'; key.ctrl = false; break;
+      case 'f': key.name = 'right'; key.ctrl = false; break;
+      case 'b': key.name = 'left'; key.ctrl = false; break;
+    }
+  }
+});
+
 function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -84,16 +97,25 @@ program
         process.exit(1);
       }
       selectedSessions = [session];
-    } else if (sessions.length === 1) {
-      // 1つしかないならそのまま
-      selectedSessions = [sessions[0]];
     } else {
+      // カレントプロジェクト配下のセッションを優先表示
+      const cwd = process.cwd();
+      const projectSessions = sessions.filter(s => s.cwd === cwd);
+      const candidates = projectSessions.length > 0 ? projectSessions : sessions;
+
+      if (candidates.length === 1) {
+        selectedSessions = [candidates[0]];
+      } else {
       // TUIで選択
       p.intro('move-chat push');
 
+      const hint = projectSessions.length > 0
+        ? `${basename(cwd)} (${projectSessions.length} sessions)`
+        : 'all projects';
+
       const selected = await p.multiselect({
-        message: 'Select sessions to push (space to select, enter to confirm)',
-        options: sessions.slice(0, 30).map(s => ({
+        message: `Select sessions to push [${hint}] (space to select, enter to confirm)`,
+        options: candidates.slice(0, 30).map(s => ({
           value: s.sessionId,
           label: formatSessionLabel(s, claudeDir),
         })),
@@ -105,7 +127,8 @@ program
         process.exit(0);
       }
 
-      selectedSessions = sessions.filter(s => (selected as string[]).includes(s.sessionId));
+      selectedSessions = candidates.filter(s => (selected as string[]).includes(s.sessionId));
+      }
     }
 
     // push各セッション
