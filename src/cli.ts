@@ -205,7 +205,7 @@ program
           `Project:    ${cwd}`,
           '',
           `Resume with:`,
-          `  claude --resume ${sessionId}`,
+          `  cd ${cwd} && claude --resume ${sessionId}`,
         ].join('\n'),
         'Session imported',
       );
