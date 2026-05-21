@@ -1,7 +1,7 @@
 {
-  "name": "move-chat",
+  "name": "move-agent-chat",
   "version": "0.1.0",
-  "description": "Move Claude Code chat sessions between machines",
+  "description": "Move agent chat sessions between machines",
   "type": "module",
   "files": [
     "dist/**/*.js",
@@ -9,6 +9,7 @@
     "!dist/__tests__"
   ],
   "bin": {
+    "move-agent-chat": "./dist/cli.js",
     "move-chat": "./dist/cli.js"
   },
   "scripts": {

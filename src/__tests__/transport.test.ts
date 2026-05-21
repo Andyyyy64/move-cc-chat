@@ -3,10 +3,10 @@ import { buildUploadArgs, buildDownloadArgs, parseGistUrl } from '../transport.j
 
 describe('buildUploadArgs', () => {
   it('constructs gh gist create command args', () => {
-    const args = buildUploadArgs('/tmp/bundle.enc', 'move-chat transfer');
+    const args = buildUploadArgs('/tmp/bundle.enc', 'move-agent-chat transfer');
     expect(args).toEqual([
       'gist', 'create', '/tmp/bundle.enc',
-      '--desc', 'move-chat transfer',
+      '--desc', 'move-agent-chat transfer',
     ]);
   });
 });

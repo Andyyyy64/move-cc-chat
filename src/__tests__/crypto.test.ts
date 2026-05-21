@@ -56,6 +56,12 @@ describe('transfer code', () => {
     expect(() => parseTransferCode('invalid')).toThrow();
     expect(() => parseTransferCode('mc_short')).toThrow();
   });
+
+  it('throws on compact codes with trailing payload bytes', () => {
+    const key = Buffer.alloc(32, 0xab);
+    const payload = Buffer.concat([key, Buffer.from([1]), Buffer.from([0xcd]), Buffer.from([0xef])]);
+    expect(() => parseTransferCode(`mc_${payload.toString('base64url')}`)).toThrow('malformed payload');
+  });
 });
 
 describe('encrypt/decrypt', () => {
@@ -85,5 +91,10 @@ describe('encrypt/decrypt', () => {
     const encrypted = encrypt(data, key);
     const decrypted = decrypt(encrypted, key);
     expect(decrypted).toEqual(data);
+  });
+
+  it('rejects invalid key and payload lengths with clear errors', () => {
+    expect(() => encrypt(Buffer.from('data'), Buffer.alloc(31))).toThrow('expected 32 bytes');
+    expect(() => decrypt(Buffer.alloc(27), Buffer.alloc(32))).toThrow('too short');
   });
 });

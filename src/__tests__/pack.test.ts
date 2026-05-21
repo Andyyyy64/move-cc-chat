@@ -11,8 +11,8 @@ describe('pack and unpack round-trip', () => {
   let dstClaudeDir: string;
 
   beforeEach(() => {
-    srcClaudeDir = mkdtempSync(join(tmpdir(), 'move-chat-src-'));
-    dstClaudeDir = mkdtempSync(join(tmpdir(), 'move-chat-dst-'));
+    srcClaudeDir = mkdtempSync(join(tmpdir(), 'move-agent-chat-src-'));
+    dstClaudeDir = mkdtempSync(join(tmpdir(), 'move-agent-chat-dst-'));
 
     const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
     const projectDir = join(srcClaudeDir, 'projects', '-home-alice-myproject');

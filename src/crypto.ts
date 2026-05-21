@@ -53,6 +53,7 @@ export function parseTransferCode(code: string): { key: Buffer; gistId: string }
   const gistBytes = payload.subarray(33, 33 + gistIdLen);
 
   if (gistBytes.length !== gistIdLen) throw new Error('Invalid transfer code: truncated gist ID');
+  if (payload.length !== 33 + gistIdLen) throw new Error('Invalid transfer code: malformed payload');
 
   const gistId = gistBytes.toString('hex');
   return { key, gistId };
@@ -63,6 +64,8 @@ export function parseTransferCode(code: string): { key: Buffer; gistId: string }
  * Output format: [12 bytes IV][16 bytes auth tag][...ciphertext]
  */
 export function encrypt(data: Buffer, key: Buffer): Buffer {
+  if (key.length !== 32) throw new Error('Invalid encryption key: expected 32 bytes');
+
   const iv = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', key, iv);
 
@@ -76,6 +79,9 @@ export function encrypt(data: Buffer, key: Buffer): Buffer {
  * Decrypt AES-256-GCM encrypted data.
  */
 export function decrypt(data: Buffer, key: Buffer): Buffer {
+  if (key.length !== 32) throw new Error('Invalid encryption key: expected 32 bytes');
+  if (data.length < 28) throw new Error('Invalid encrypted payload: too short');
+
   const iv = data.subarray(0, 12);
   const authTag = data.subarray(12, 28);
   const ciphertext = data.subarray(28);

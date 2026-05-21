@@ -3,6 +3,8 @@ import { writeFileSync, unlinkSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
+const MAX_GIST_DOWNLOAD_BYTES = 200 * 1024 * 1024;
+
 export function buildUploadArgs(filePath: string, description: string): string[] {
   return ['gist', 'create', filePath, '--desc', description];
 }
@@ -24,13 +26,13 @@ export function parseGistUrl(urlOrId: string): string {
  * Returns the gist ID.
  */
 export function uploadToGist(encryptedData: Buffer): string {
-  const tmpDir = mkdtempSync(join(tmpdir(), 'move-chat-'));
+  const tmpDir = mkdtempSync(join(tmpdir(), 'move-agent-chat-'));
   const filePath = join(tmpDir, 'session.bin');
 
   writeFileSync(filePath, encryptedData.toString('base64'));
 
   try {
-    const result = execFileSync('gh', buildUploadArgs(filePath, 'move-chat session transfer'), {
+    const result = execFileSync('gh', buildUploadArgs(filePath, 'move-agent-chat session transfer'), {
       encoding: 'utf-8',
       timeout: 30000,
     });
@@ -50,7 +52,7 @@ export function downloadFromGist(gistId: string): Buffer {
   const result = execFileSync('gh', buildDownloadArgs(gistId), {
     encoding: 'utf-8',
     timeout: 30000,
-    maxBuffer: 50 * 1024 * 1024,
+    maxBuffer: MAX_GIST_DOWNLOAD_BYTES,
   });
 
   return Buffer.from(result.trim(), 'base64');

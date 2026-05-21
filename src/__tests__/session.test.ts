@@ -29,7 +29,7 @@ describe('listSessions', () => {
   let claudeDir: string;
 
   beforeEach(() => {
-    claudeDir = mkdtempSync(join(tmpdir(), 'move-chat-test-'));
+    claudeDir = mkdtempSync(join(tmpdir(), 'move-agent-chat-test-'));
     mkdirSync(join(claudeDir, 'sessions'), { recursive: true });
   });
 
@@ -63,7 +63,7 @@ describe('getSessionFiles', () => {
   let claudeDir: string;
 
   beforeEach(() => {
-    claudeDir = mkdtempSync(join(tmpdir(), 'move-chat-test-'));
+    claudeDir = mkdtempSync(join(tmpdir(), 'move-agent-chat-test-'));
   });
 
   afterEach(() => {

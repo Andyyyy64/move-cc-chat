@@ -11,6 +11,16 @@ import { unpackSession } from './unpack.js';
 import { generateTransferCode, parseTransferCode, encrypt, decrypt } from './crypto.js';
 import { uploadToGist, downloadFromGist, deleteGist } from './transport.js';
 import { checkCwdExists } from './unpack.js';
+import {
+  getCodexHome,
+  getDefaultCodexProvider,
+  listCodexSessions,
+  packCodexSession,
+  unpackCodexSession,
+  type CodexProvider,
+  type CodexPullMode,
+} from './codex.js';
+import { startUiServer } from './ui.js';
 
 // Emacs keybind support: Ctrl+N/P/F/B → arrow key equivalents
 // prependListenerでclackより先にkeypressをinterceptし、keyオブジェクトを書き換える
@@ -49,6 +59,11 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
+function compactText(text: string, max = 120): string {
+  const oneLine = text.replace(/\s+/g, ' ').trim();
+  return oneLine.length > max ? `${oneLine.slice(0, max - 3)}...` : oneLine;
+}
+
 function formatSessionLabel(s: SessionMeta, claudeDir: string): string {
   const id = s.sessionId.slice(0, 8);
   const date = new Date(s.startedAt).toLocaleString();
@@ -68,12 +83,220 @@ async function pushSession(session: SessionMeta, claudeDir: string): Promise<{ c
   return { code, sessionId: session.sessionId };
 }
 
+function parseCodexProvider(value: string | undefined): CodexProvider {
+  if (!value) return getDefaultCodexProvider();
+  if (value === 'codex-app' || value === 'codex-cli') return value;
+  throw new Error(`Invalid Codex provider: ${value}. Use codex-app or codex-cli.`);
+}
+
+function parseCodexPullMode(value: string | undefined): CodexPullMode {
+  if (!value) return 'native';
+  if (value === 'native' || value === 'handoff') return value;
+  throw new Error(`Invalid pull mode: ${value}. Use native or handoff.`);
+}
+
+async function pushCodex(options: {
+  provider?: string;
+  home?: string;
+  session?: string;
+  current?: boolean;
+  shellSnapshots?: boolean;
+  generatedImages?: boolean;
+}): Promise<{ code: string; threadId: string }> {
+  const provider = parseCodexProvider(options.provider);
+  const bundle = packCodexSession({
+    provider,
+    home: options.home,
+    sessionId: options.session,
+    current: options.current ?? (!options.session && Boolean(process.env.CODEX_THREAD_ID)),
+    includeShellSnapshots: options.shellSnapshots !== false,
+    includeGeneratedImages: options.generatedImages !== false,
+  });
+  const key = randomBytes(32);
+  const encrypted = encrypt(bundle, key);
+  const gistId = uploadToGist(encrypted);
+  const { code } = generateTransferCode(gistId, key);
+  const threadId = options.session ?? process.env.CODEX_THREAD_ID ?? 'latest';
+  return { code, threadId };
+}
+
 const program = new Command();
 
 program
-  .name('move-chat')
-  .description('Move Claude Code chat sessions between machines')
+  .name('move-agent-chat')
+  .description('Move agent chat sessions between machines')
   .version('0.1.0');
+
+const codex = program
+  .command('codex')
+  .description('Move Codex Desktop/CLI sessions between machines');
+
+program
+  .command('ui')
+  .description('Start the local move-agent-chat UI')
+  .option('--host <host>', 'Host to bind', '127.0.0.1')
+  .option('-p, --port <port>', 'Port to bind', '17345')
+  .option('--provider <provider>', 'Default provider: codex-app or codex-cli')
+  .option('--home <path>', 'Override Codex home directory')
+  .option('--open', 'Open the UI in your browser')
+  .action(async (opts) => {
+    try {
+      const provider = opts.provider ? parseCodexProvider(opts.provider) : undefined;
+      const port = Number.parseInt(opts.port, 10);
+      const { server, url } = await startUiServer({
+        host: opts.host,
+        port: Number.isFinite(port) ? port : 17345,
+        provider,
+        home: opts.home,
+        open: Boolean(opts.open),
+      });
+      p.log.success(`move-agent-chat UI: ${url}`);
+      p.log.info('Press Ctrl+C to stop.');
+      await new Promise<void>((resolve) => {
+        const shutdown = () => {
+          server.close(() => resolve());
+        };
+        process.once('SIGINT', shutdown);
+        process.once('SIGTERM', shutdown);
+      });
+    } catch (err) {
+      p.log.error(String(err));
+      process.exit(1);
+    }
+  });
+
+codex
+  .command('list')
+  .description('List local Codex sessions')
+  .option('--provider <provider>', 'codex-app or codex-cli')
+  .option('--home <path>', 'Override Codex home directory')
+  .option('-n, --limit <number>', 'Number of sessions to show', '30')
+  .action(async (opts) => {
+    try {
+      const provider = parseCodexProvider(opts.provider);
+      const home = opts.home ?? getCodexHome(provider);
+      const limit = Number.parseInt(opts.limit, 10);
+      const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : 30;
+      const sessions = listCodexSessions(provider, home, safeLimit);
+
+      if (sessions.length === 0) {
+        console.log(`No Codex sessions found in ${home}.`);
+        return;
+      }
+
+      console.log('');
+      for (const s of sessions.slice(0, safeLimit)) {
+        const current = s.id === process.env.CODEX_THREAD_ID ? ' [CURRENT]' : '';
+        const size = formatSize(statSync(s.sessionPath).size);
+        const project = s.cwd ? basename(s.cwd) : '(unknown cwd)';
+        console.log(`  ${s.id.slice(0, 8)}  ${new Date(s.updatedAt).toLocaleString()}  ${project}  ${size}${current}`);
+        console.log(`    ${compactText(s.title)}`);
+        console.log(`    ${s.sessionPath}`);
+      }
+      console.log('');
+    } catch (err) {
+      p.log.error(String(err));
+      process.exit(1);
+    }
+  });
+
+codex
+  .command('push')
+  .description('Send a Codex session to another machine')
+  .option('-s, --session <id>', 'Codex thread ID to push')
+  .option('--current', 'Push CODEX_THREAD_ID from the current Codex thread')
+  .option('--provider <provider>', 'codex-app or codex-cli')
+  .option('--home <path>', 'Override Codex home directory')
+  .option('--no-shell-snapshots', 'Do not include shell snapshots for the thread')
+  .option('--no-generated-images', 'Do not include generated images for the thread')
+  .action(async (opts) => {
+    p.intro('move-agent-chat codex push');
+    p.log.warn('Codex sessions can contain secrets in prompts, tool calls, and command output. The bundle is encrypted before upload.');
+
+    const spinner = p.spinner();
+    try {
+      spinner.start('Packing and uploading Codex session...');
+      const { code } = await pushCodex(opts);
+      spinner.stop('Uploaded.');
+
+      p.log.success('Transfer code');
+      console.log(`  move-agent-chat codex pull ${code}`);
+      console.log('');
+      console.log('  Handoff-only import:');
+      console.log(`  move-agent-chat codex pull ${code} --mode handoff`);
+      console.log('');
+      p.outro('Done. The Gist will be auto-deleted after pull.');
+    } catch (err) {
+      spinner.stop('Failed.');
+      p.log.error(String(err));
+      process.exit(1);
+    }
+  });
+
+codex
+  .command('pull')
+  .description('Receive a Codex session from another machine')
+  .argument('<code>', 'Transfer code from codex push')
+  .option('--provider <provider>', 'codex-app or codex-cli')
+  .option('--home <path>', 'Override Codex home directory')
+  .option('--mode <mode>', 'native or handoff', 'native')
+  .option('--cwd <path>', 'Override project directory on this machine')
+  .option('--force', 'Overwrite an existing native thread with the same ID')
+  .option('--no-sqlite', 'Skip state_5.sqlite thread metadata update')
+  .action(async (code: string, opts) => {
+    p.intro('move-agent-chat codex pull');
+    const spinner = p.spinner();
+
+    try {
+      spinner.start('Downloading...');
+      const { key, gistId } = parseTransferCode(code);
+      const encrypted = downloadFromGist(gistId);
+      spinner.stop('Downloaded.');
+
+      spinner.start('Decrypting and importing...');
+      const provider = opts.provider ? parseCodexProvider(opts.provider) : undefined;
+      const mode = parseCodexPullMode(opts.mode);
+      const bundle = decrypt(encrypted, key);
+      const result = unpackCodexSession(bundle, {
+        provider,
+        home: opts.home,
+        mode,
+        cwd: opts.cwd ?? null,
+        force: Boolean(opts.force),
+        updateSqlite: opts.sqlite !== false,
+      });
+      spinner.stop('Imported.');
+
+      spinner.start('Cleaning up gist...');
+      try {
+        deleteGist(gistId);
+        spinner.stop('Gist deleted.');
+      } catch {
+        spinner.stop(`Could not delete gist — delete it manually: https://gist.github.com/${gistId}`);
+      }
+
+      p.log.success('Codex session imported!');
+      console.log(`  Thread ID: ${result.threadId}`);
+      console.log(`  Project:   ${result.cwd}`);
+      console.log(`  Mode:      ${result.mode}`);
+      console.log(`  Path:      ${result.path}`);
+
+      if (result.mode === 'handoff') {
+        console.log('');
+        console.log('  Ask Codex on this machine to continue from:');
+        console.log(`  ${result.path}/handoff.md`);
+      } else {
+        console.log('');
+        console.log('  Reopen Codex Desktop/CLI if the imported thread does not appear immediately.');
+      }
+
+      p.outro('Done!');
+    } catch (err) {
+      spinner.stop('Failed.');
+      p.log.error(String(err));
+      process.exit(1);
+    }
+  });
 
 program
   .command('push')
@@ -108,7 +331,7 @@ program
         selectedSessions = [candidates[0]];
       } else {
       // TUIで選択
-      p.intro('move-chat push');
+      p.intro('move-agent-chat push');
 
       if (projectSessions.length === 0) {
         p.log.warn(`No sessions found for ${basename(cwd)} — showing all projects`);
@@ -162,7 +385,7 @@ program
       const id = r.session.sessionId.slice(0, 8);
       const project = basename(r.session.cwd);
       p.log.success(`${id} (${project})`);
-      console.log(`  move-chat pull ${r.code}`);
+      console.log(`  move-agent-chat pull ${r.code}`);
       console.log('');
     }
 
@@ -175,7 +398,7 @@ program
   .argument('<code>', 'Transfer code from push command')
   .option('--cwd <path>', 'Override project directory on this machine')
   .action(async (code: string, opts) => {
-    p.intro('move-chat pull');
+    p.intro('move-agent-chat pull');
 
     const spinner = p.spinner();
 

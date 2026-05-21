@@ -11,8 +11,8 @@ describe('full local round-trip (no network)', () => {
   let pcB: string;
 
   beforeEach(() => {
-    pcA = mkdtempSync(join(tmpdir(), 'move-chat-pcA-'));
-    pcB = mkdtempSync(join(tmpdir(), 'move-chat-pcB-'));
+    pcA = mkdtempSync(join(tmpdir(), 'move-agent-chat-pcA-'));
+    pcB = mkdtempSync(join(tmpdir(), 'move-agent-chat-pcB-'));
 
     const sessionId = '11111111-2222-3333-4444-555555555555';
     const projectDir = join(pcA, 'projects', '-home-alice-work-myapp');
