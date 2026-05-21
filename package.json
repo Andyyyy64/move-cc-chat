@@ -5,6 +5,7 @@
   "type": "module",
   "files": [
     "codex-plusplus/**/*",
+    "docs/**/*.md",
     "dist/**/*.js",
     "dist/**/*.d.ts",
     "!dist/__tests__",
