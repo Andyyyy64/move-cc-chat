@@ -4,9 +4,11 @@
   "description": "Move agent chat sessions between machines",
   "type": "module",
   "files": [
+    "codex-plusplus/**/*",
     "dist/**/*.js",
     "dist/**/*.d.ts",
-    "!dist/__tests__"
+    "!dist/__tests__",
+    "scripts/**/*.mjs"
   ],
   "bin": {
     "move-agent-chat": "./dist/cli.js",
@@ -15,6 +17,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/cli.ts",
+    "install:codexpp-tweak": "node scripts/install-codexpp-tweak.mjs",
     "start": "node dist/cli.js",
     "test": "vitest run",
     "test:watch": "vitest"

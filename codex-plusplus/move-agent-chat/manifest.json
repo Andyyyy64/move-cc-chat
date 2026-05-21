@@ -1,0 +1,11 @@
+{
+  "id": "dev.andyyyy.move-agent-chat",
+  "name": "Move Agent Chat",
+  "version": "0.1.0",
+  "githubRepo": "Andyyyy64/move-agent-chat",
+  "author": "Andyyyy64",
+  "description": "Adds a Codex settings panel for moving Codex chats between machines.",
+  "scope": "both",
+  "main": "index.js",
+  "minRuntime": "0.1.0"
+}
