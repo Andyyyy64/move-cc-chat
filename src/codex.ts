@@ -141,13 +141,13 @@ export function getDefaultCodexProvider(): CodexProvider {
 
 export function getCodexHome(provider: CodexProvider = getDefaultCodexProvider()): string {
   const envHome = process.env.CODEX_HOME;
-  if (envHome) {
-    const envBase = basename(envHome);
-    if (provider === 'codex-app' && envBase === '.codex-app') return envHome;
-    if (provider === 'codex-cli' && envBase === '.codex') return envHome;
-  }
+  if (envHome) return envHome;
 
-  return join(homedir(), provider === 'codex-app' ? '.codex-app' : '.codex');
+  const unifiedHome = join(homedir(), '.codex');
+  if (provider === 'codex-cli' || existsSync(join(unifiedHome, 'sessions')) || existsSync(join(unifiedHome, 'state_5.sqlite'))) {
+    return unifiedHome;
+  }
+  return join(homedir(), '.codex-app');
 }
 
 export function listCodexSessions(provider: CodexProvider = getDefaultCodexProvider(), home = getCodexHome(provider), limit?: number): CodexSessionMeta[] {

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Move Agent Chat"
+  short_description: "Safely upload and import local Codex threads."
+  default_prompt: "Inspect and transfer a local Codex thread between my registered devices."

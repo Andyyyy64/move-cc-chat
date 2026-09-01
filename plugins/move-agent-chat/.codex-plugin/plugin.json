@@ -1,0 +1,37 @@
+{
+  "name": "move-agent-chat",
+  "version": "0.2.0+codex.20260901064037",
+  "description": "Explicitly upload and import native local Codex threads between registered devices with conflict inspection.",
+  "author": {
+    "name": "Andyyyy64",
+    "url": "https://github.com/Andyyyy64"
+  },
+  "homepage": "https://github.com/Andyyyy64/move-agent-chat",
+  "repository": "https://github.com/Andyyyy64/move-agent-chat",
+  "keywords": [
+    "codex",
+    "thread-transfer",
+    "local-first",
+    "mcp"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Move Agent Chat",
+    "shortDescription": "Safely transfer local Codex threads.",
+    "longDescription": "Upload one native local Codex thread to a registered device inbox, inspect exact history and project conflicts, then import it into local Codex storage.",
+    "developerName": "Andyyyy64",
+    "category": "Productivity",
+    "capabilities": [
+      "Local thread inspection",
+      "Encrypted upload",
+      "Conflict-aware import"
+    ],
+    "websiteURL": "https://github.com/Andyyyy64/move-agent-chat",
+    "defaultPrompt": [
+      "Upload this Codex thread to my desktop.",
+      "Inspect pending thread uploads for this device.",
+      "Import the inspected upload into this local Codex."
+    ]
+  }
+}

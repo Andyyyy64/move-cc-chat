@@ -1,153 +1,108 @@
-# Codex Transfer Architecture
+# Codex local thread transfer architecture
 
-`move-agent-chat` treats Codex as the primary provider. It supports Codex
-Desktop and Codex CLI through separate home directories.
+This document records the storage contract observed in Codex App 26.825.51511 and Codex CLI 0.147.0 on 2026-09-01, cross-checked against the current `openai/codex` thread-store and rollout source. Local storage is not a stable public API, so the implementation discovers capabilities and refuses unknown required state rather than assuming an older schema.
 
-## Codex Homes
+## Source-of-truth hierarchy
 
-Codex Desktop:
+### 1. Durable rollout
 
-- default home: `~/.codex-app`
-- session transcripts: `~/.codex-app/sessions/YYYY/MM/DD/*.jsonl`
-- thread list database: `~/.codex-app/state_5.sqlite`
-- lightweight thread index: `~/.codex-app/session_index.jsonl`
-- shell snapshots: `~/.codex-app/shell_snapshots/<thread-id>.*.sh`
-- generated images: `~/.codex-app/generated_images/<thread-id>/`
+The durable chat is an append-only JSONL file:
 
-Codex CLI:
+```text
+<codex-home>/sessions/YYYY/MM/DD/rollout-<timestamp>-<thread-id>.jsonl
+```
 
-- default home: `~/.codex`
-- session transcripts: `~/.codex/sessions/YYYY/MM/DD/*.jsonl`
-- archived transcripts: `~/.codex/archived_sessions/*.jsonl`
-- thread list database: `~/.codex/state_5.sqlite`
-- lightweight thread index: `~/.codex/session_index.jsonl`
-- prompt history: `~/.codex/history.jsonl`
+Archived rollouts may live under `archived_sessions/`. The filename can contain more than one UUID after a fork or migration; `session_meta.payload.id`, not a filename substring alone, identifies the thread.
 
-When running inside Codex, the active environment usually exposes:
+Paginated history rows contain `ordinal`, `timestamp`, `type`, and `payload`. Legacy history remains present in current Codex stores and has the same JSONL event families without ordinals. Observed top-level types include:
 
-- `CODEX_HOME`
-- `CODEX_THREAD_ID`
+- `session_meta`: thread/session IDs, cwd, source, thread source, model provider, CLI version, history mode, optional Git and history-base data, and dynamic tools;
+- `turn_context`: per-turn cwd, model/effort, permission profile, workspace roots, summary, and turn ID;
+- `response_item`: user/assistant messages, encrypted reasoning, and tool calls/outputs;
+- `event_msg`: task lifecycle, item completion, token counts, and UI event summaries;
+- `world_state` and other versioned records.
 
-These are used by `move-agent-chat codex push --current`.
+The importer requires a complete newline-terminated file, valid JSON beginning with `session_meta`, and a matching UUID. Paginated history requires non-decreasing ordinals on every row; observed duplicate ordinals are preserved and counted in the manifest, while descending ordinals are rejected. Legacy history permits all rows to omit ordinals; mixed legacy rows are rejected. It reads a stable snapshot and rejects a file that changes during the read.
 
-## Transcript Format
+### 2. State database
 
-Codex transcript files are JSONL. The important top-level row types are:
+`state_5.sqlite.threads` registers each rollout in the native thread list. The current table has evolved beyond the original 17 fields and includes:
 
-- `session_meta`: thread id, cwd, originator, source, CLI version, model
-  provider, dynamic tools, and git metadata.
-- `turn_context`: per-turn cwd, current date, timezone, model, effort,
-  sandbox and approval policy, summary, and developer instructions.
-- `response_item`: model messages, reasoning records, tool calls, and tool
-  outputs.
-- `event_msg`: UI/event stream such as task start, user message, agent message,
-  and token counts.
+- durable linkage: `id`, `rollout_path`, timestamps, source, cwd, title;
+- execution metadata: provider/model/effort, sandbox, approval, history mode, memory mode;
+- Git metadata;
+- presentation and organization: preview, explicit `name`, archive, pin, section/position, recency, project ID.
 
-The transcript is the source of truth for continuing work. SQLite and
-`session_index.jsonl` are UI/indexing layers.
+Related tables include projects/project roots, thread sections, dynamic tools, spawn edges, and thread artifacts. Those rows are destination-local or independently derived. A sync import does not wholesale copy them.
 
-## Listing Sessions
+For a new thread, the importer inserts only columns present in the destination schema and resolves `project_id` from destination project roots. For an existing thread, it updates only rollout-derived fields and the destination cwd. It preserves destination project, explicit name, pin, section, archive state, positions, and unrelated relations.
 
-`move-agent-chat codex list` reads `state_5.sqlite` first because it contains
-the current UI thread list and avoids scanning large transcript trees.
+### 3. Materialized history
 
-If SQLite is unavailable or empty, it falls back to `session_index.jsonl` and
-then to walking transcript files. The CLI accepts `--limit` to avoid loading a
-large history unnecessarily.
+`thread_history_1.sqlite` contains derived `thread_turns`, `thread_items`, `thread_realtime_items`, and `thread_history_projection_state` tables.
 
-## Packing
+The projection state couples a durable JSONL byte offset with the next ordinal. Codex applies projected rows and advances that checkpoint in one SQLite transaction, so the database may lag the rollout but must never lead it.
 
-`packCodexSession()` creates a gzip JSON bundle with:
+For a `source-ahead` sync, the existing destination rollout is an exact prefix, so its current projection checkpoint remains valid and Codex can materialize only the new suffix. A missing thread has no projection rows and materializes from byte zero. Diverged replacements are prohibited, so the importer never rewrites derived history behind Codex's back.
 
-- manifest version `2`
-- kind `codex-session`
-- provider `codex-app` or `codex-cli`
-- thread id, title, cwd, updated timestamp, model metadata, first user message,
-  and git metadata
-- `session.jsonl`
-- matching `session_index.jsonl` rows
-- matching `shell_snapshots/<thread-id>.*.sh`
-- matching `generated_images/<thread-id>/...` for Codex Desktop
+### 4. Lightweight index and assets
 
-The bundle is encrypted by the transport layer before upload.
+`session_index.jsonl` currently uses `id`, `thread_name`, and `updated_at`. The importer atomically replaces only the selected thread's index entry.
 
-## Local UI Flow
+Known thread-local generated media lives under `generated_images/<thread-id>/` and is restored after path/traversal and hash validation. Shell snapshots are excluded because they contain machine-specific environment and paths and are not safe cross-platform state.
 
-`move-agent-chat ui` exposes a localhost-only web UI for Codex transfer.
+### 5. Writer coordination
 
-The UI does not browse GitHub Gist contents directly in the page. It calls the
-local helper API, and the helper downloads the encrypted `session.bin`, decrypts
-it with the key from the transfer code, and returns a structured preview.
+An existing `thread-writer-locks/<thread-id>.lock` indicates a local writer may own that thread. Mutating a same-ID rollout while Codex holds an open writer can split the file descriptor from its path or race an append, so import is blocked until the destination thread is closed.
 
-The preview intentionally shows metadata instead of dumping the full transcript:
+## Exact lineage model
 
-- thread id, title, provider, cwd, model, effort, and git metadata
-- total packed bytes and transcript bytes
-- shell snapshot count and generated image count
-- whether a matching `session_index.jsonl` row is included
+The plugin compares durable bytes, not titles, timestamps, row counts, or rewritten JSON.
 
-Import still happens through the same `unpackCodexSession()` path used by the
-CLI, so CLI and UI behavior stay aligned.
+```text
+missing            destination has no rollout
+identical          source == destination
+source-ahead       destination is an exact byte prefix of source
+destination-ahead  source is an exact byte prefix of destination
+diverged           neither is a prefix
+```
 
-## Transfer Code
+For divergence, the report gives the common byte count and the first differing row's ordinal/type without returning transcript content. There is no automatic JSONL merge: duplicated tool calls, encrypted reasoning items, turn lifecycle rows, and history-base references cannot be safely interleaved generically.
 
-The transfer code encodes:
+The plugin does not rewrite historical cwd strings. Rewriting old JSON would break exact prefix lineage and falsify historical tool output. The selected destination cwd is stored in destination thread metadata, and future turns record their own destination context.
 
-- AES-256-GCM key
-- Gist id
+Reverted and fork-derived rollouts can declare `session_meta.history_base` with an immutable rollout ID, byte offset, and ordinal boundary. The packer resolves that rollout ID from the canonical filename, recursively follows its own history base, and includes only each referenced complete JSONL prefix. Destination inspection applies the same exact-prefix classification to every dependency. A missing/source-ahead dependency is written before the selected rollout; a diverged or actively written dependency blocks the entire import.
 
-The key is never uploaded to GitHub. Whoever has the transfer code can decrypt
-the Gist payload, so the code must be treated as sensitive until consumed.
+The stable thread ID and selected immutable rollout ID are distinct after `thread/revert`. If both machines have the same thread ID but select different rollout IDs, the destination selection is considered related only when its rollout ID appears in the source history dependency chain. That case is reported as `source-branches-from-destination` and requires explicit agent approval. The importer preserves the old rollout file, writes the new selected rollout at its own canonical path, and updates only the thread's SQLite rollout pointer. Unrelated selected rollout IDs are blocked.
 
-## Import Modes
+## Bundle v3
 
-Native mode:
+The encrypted payload contains manifest/device IDs, rollout hash and ordinal range, bounded thread metadata, the source project/Git snapshot, recursively required history-base prefixes, generated-image hashes/bytes, and the exact selected rollout bytes.
 
-- writes the transcript into the local Codex sessions directory
-- appends a `session_index.jsonl` row
-- updates `state_5.sqlite.threads` when `sqlite3` is available
-- restores matching shell snapshots and generated images
-- refuses to overwrite an existing transcript unless `--force` is used
+Before any destination write, the importer verifies schema, UUIDs, newline/JSON/ordinal rules, all hashes and sizes, known asset roots, and traversal constraints.
 
-Handoff mode:
+## Device inbox
 
-- writes `imports/<thread-id>/session.jsonl`
-- writes `imports/<thread-id>/handoff.md`
-- does not modify native Codex session/index state
+Each machine generates a local X25519 key pair. The private PKCS#8 key stays in `~/.move-agent-chat/device.json` with restrictive permissions. A public SPKI device card is published as a secret/unlisted Gist and identified by the SHA-256 fingerprint of the public key.
 
-Use handoff mode when you want a safe read-only import and native mode when you
-want the thread to appear in Codex Desktop or Codex CLI history.
+At upload, the source resolves one exact named destination card, creates an ephemeral X25519 key, derives an AES-256-GCM key through HKDF-SHA-256, encrypts the gzip bundle, and uploads it addressed to the destination fingerprint.
 
-## Path Rewriting
+The destination lists only uploads addressed to its fingerprint and decrypts with its private key. There is no symmetric transfer code to copy between chats. A successful import deletes the upload; deletion failure is reported independently because it does not roll back a completed local import.
 
-`--cwd` rewrites occurrences of the source cwd in transcript text and shell
-snapshots. This is intentionally conservative and string-based, because Codex
-tool outputs can contain cwd values in many shapes.
+GitHub receives ciphertext plus minimal routing metadata. Secret Gists are unlisted rather than access-controlled private storage, so recipient encryption remains required.
 
-This means:
+## Project collision analysis
 
-- exact source cwd occurrences are rewritten
-- unrelated text containing the same exact path is also rewritten
-- path aliases or symlinks that do not match the exact source cwd are not
-  rewritten
+The thread and project are separate state domains. The plugin never synchronizes project files.
 
-## Native UI Registration
+For Git repositories it compares normalized remote identities, HEAD, branch, a tracked-file inventory hash, and staged/unstaged/untracked paths. For non-Git directories it builds a bounded inventory of relative paths, file sizes, and hashes for small files within a total hashing budget.
 
-Codex Desktop uses `state_5.sqlite.threads` for the thread list. Native import
-inserts or replaces the thread row only when requested with `--force`.
+Target selection order is an explicitly supplied existing `targetCwd`, then the exact source path when it exists locally, then one unambiguous saved-project candidate with the same Git remote identity or non-Git basename.
 
-The SQLite update is best-effort. If it fails, the imported transcript remains
-available on disk and `session_index.jsonl` is still updated.
+Any difference becomes structured evidence for Codex, including bounded `onlySource`, `onlyDestination`, and `changed` relative-path lists computed from the two inventories. The agent skill requires local read-only inspection of those relevant paths before accepting the project state. The inspection token hashes the upload, destination rollout, selected project snapshot, writer-lock state, and candidate evidence, so a state change invalidates earlier approval.
 
-## Known Storage Coupling
+## Import transaction boundary
 
-Codex storage is not a public stable API. This implementation is based on the
-observed Codex Desktop and Codex CLI layout:
+Import performs fresh inspection/token verification, an atomic same-directory rollout write, validated image writes, a SQLite transaction for registration, an atomic index update, and independent inbox deletion.
 
-- `sessions/YYYY/MM/DD/*.jsonl` is treated as the transcript source of truth.
-- `state_5.sqlite.threads` is treated as a best-effort UI registration layer.
-- `session_index.jsonl` is treated as a lightweight fallback index.
-
-If Codex changes these paths or schema columns, native import may still place
-the transcript on disk but fail to show the thread in the app until the adapter
-is updated.
+A new-rollout failure removes the newly created rollout best-effort. Existing source-ahead writes are exact-prefix replacements and do not offer a force or divergent rollback path.

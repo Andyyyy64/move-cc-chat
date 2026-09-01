@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "move-agent-chat": {
+      "title": "Move Agent Chat",
+      "description": "Conflict-aware local Codex thread upload and import.",
+      "cwd": ".",
+      "command": "node",
+      "args": [
+        "--disable-warning=ExperimentalWarning",
+        "./mcp/server.mjs"
+      ],
+      "env_vars": [
+        "CODEX_HOME",
+        "CODEX_THREAD_ID",
+        "CODEX_SESSION_ID"
+      ]
+    }
+  }
+}
