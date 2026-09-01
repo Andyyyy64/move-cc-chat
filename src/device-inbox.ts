@@ -9,7 +9,7 @@ import {
   hkdfSync,
   randomBytes,
 } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
@@ -18,8 +18,12 @@ import { sha256, type SyncBundleV3, validateSyncBundle } from './codex-sync.js';
 const DEVICE_MARKER = 'move-agent-chat-device-v1';
 const TRANSFER_MARKER = 'move-agent-chat-transfer-v3';
 const ENVELOPE_INFO = Buffer.from('move-agent-chat-transfer-v3', 'utf8');
-const MAX_ENVELOPE_BYTES = 260 * 1024 * 1024;
-const MAX_DECOMPRESSED_BUNDLE_BYTES = 300 * 1024 * 1024;
+const MAX_ENVELOPE_BYTES = 700 * 1024 * 1024;
+const MAX_DECOMPRESSED_BUNDLE_BYTES = 900 * 1024 * 1024;
+const GIST_PAGE_SIZE = 20;
+const DIRECT_GIST_MAX_BYTES = 8 * 1024 * 1024;
+const GIT_GIST_PART_BYTES = 48 * 1024 * 1024;
+const GIT_GIST_MAX_BYTES = 700 * 1024 * 1024;
 
 export interface DeviceCard {
   schemaVersion: 1;
@@ -73,15 +77,22 @@ export interface TransferStore {
 
 export class GitHubGistStore implements TransferStore {
   list(): StoredObjectSummary[] {
-    const output = execFileSync('gh', ['api', '--paginate', '--slurp', '/gists?per_page=100'], {
-      encoding: 'utf8', timeout: 30_000, maxBuffer: 20 * 1024 * 1024,
-    });
-    const pages = JSON.parse(output) as Array<Array<{ id: string; description?: string; created_at?: string }>>;
-    const rows = pages.flat();
+    const rows: Array<{ id: string; description?: string; created_at?: string }> = [];
+    for (let page = 1; page <= 100; page += 1) {
+      const output = withRetries(() => execFileSync('gh', ['api', `/gists?per_page=${GIST_PAGE_SIZE}&page=${page}`], {
+        encoding: 'utf8', timeout: 30_000, maxBuffer: 10 * 1024 * 1024,
+      }));
+      const pageRows = JSON.parse(output) as Array<{ id: string; description?: string; created_at?: string }>;
+      rows.push(...pageRows);
+      if (pageRows.length < GIST_PAGE_SIZE) break;
+    }
     return rows.map(row => ({ id: row.id, description: row.description || '', createdAt: row.created_at || '' }));
   }
 
   create(filename: string, description: string, content: string): string {
+    const bytes = Buffer.byteLength(content);
+    if (bytes > GIT_GIST_MAX_BYTES) throw new Error(`Encrypted Gist blob exceeds ${GIT_GIST_MAX_BYTES} bytes`);
+    if (bytes > DIRECT_GIST_MAX_BYTES) return this.createViaGit(filename, description, content);
     const directory = mkdtempSync(join(tmpdir(), 'move-agent-chat-gist-'));
     const path = join(directory, filename);
     writeFileSync(path, content, { mode: 0o600 });
@@ -100,14 +111,108 @@ export class GitHubGistStore implements TransferStore {
   }
 
   read(id: string, filename: string): string {
-    return execFileSync('gh', ['gist', 'view', id, '--raw', '--filename', filename], {
-      encoding: 'utf8', timeout: 30_000, maxBuffer: MAX_ENVELOPE_BYTES,
-    });
+    try {
+      return execFileSync('gh', ['gist', 'view', id, '--raw', '--filename', filename], {
+        encoding: 'utf8', timeout: 30_000, maxBuffer: MAX_ENVELOPE_BYTES,
+      });
+    } catch {
+      const directory = mkdtempSync(join(tmpdir(), 'move-agent-chat-gist-read-'));
+      try {
+        execFileSync('git', ['clone', '--depth', '1', `https://gist.github.com/${id}.git`, directory], {
+          encoding: 'utf8', timeout: 120_000, maxBuffer: 10 * 1024 * 1024,
+        });
+        const directPath = join(directory, filename);
+        if (existsSync(directPath)) return readFileSync(directPath, 'utf8');
+        const manifest = JSON.parse(readFileSync(join(directory, 'chunks.json'), 'utf8')) as {
+          schemaVersion: number;
+          filename: string;
+          totalBytes: number;
+          sha256: string;
+          parts: Array<{ name: string; bytes: number; sha256: string }>;
+        };
+        if (manifest.schemaVersion !== 1 || manifest.filename !== filename) throw new Error('Invalid Gist chunk manifest');
+        const chunks = manifest.parts.map(part => {
+          const content = readFileSync(join(directory, part.name));
+          if (content.length !== part.bytes || sha256(content) !== part.sha256) throw new Error(`Invalid Gist chunk: ${part.name}`);
+          return content;
+        });
+        const combined = Buffer.concat(chunks);
+        if (combined.length !== manifest.totalBytes || sha256(combined) !== manifest.sha256) throw new Error('Invalid reconstructed Gist payload');
+        return combined.toString('utf8');
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    }
   }
 
   delete(id: string): void {
     execFileSync('gh', ['gist', 'delete', id, '--yes'], { encoding: 'utf8', timeout: 15_000 });
   }
+
+  private createViaGit(filename: string, description: string, content: string): string {
+    const root = mkdtempSync(join(tmpdir(), 'move-agent-chat-gist-git-'));
+    const placeholder = join(root, 'placeholder.txt');
+    writeFileSync(placeholder, 'encrypted transfer pending\n', { mode: 0o600 });
+    let gistId = '';
+    try {
+      const output = withRetries(() => execFileSync('gh', ['gist', 'create', placeholder, '--desc', description], {
+        encoding: 'utf8', timeout: 30_000, maxBuffer: 1024 * 1024,
+      })).trim();
+      gistId = output.split('/').pop() || '';
+      if (!gistId) throw new Error('GitHub did not return a Gist ID');
+      const repository = join(root, 'repository');
+      const credentialArgs = ['-c', 'credential.helper=', '-c', 'credential.https://gist.github.com.helper=!gh auth git-credential'];
+      execFileSync('git', [...credentialArgs, 'clone', `https://gist.github.com/${gistId}.git`, repository], {
+        encoding: 'utf8', timeout: 120_000, maxBuffer: 10 * 1024 * 1024,
+      });
+      unlinkSync(join(repository, 'placeholder.txt'));
+      const contentBuffer = Buffer.from(content);
+      if (contentBuffer.length <= GIT_GIST_PART_BYTES) {
+        writeFileSync(join(repository, filename), contentBuffer, { mode: 0o600 });
+      } else {
+        const parts: Array<{ name: string; bytes: number; sha256: string }> = [];
+        for (let offset = 0, index = 0; offset < contentBuffer.length; offset += GIT_GIST_PART_BYTES, index += 1) {
+          const chunk = contentBuffer.subarray(offset, Math.min(contentBuffer.length, offset + GIT_GIST_PART_BYTES));
+          const name = `transfer.part${String(index).padStart(4, '0')}`;
+          writeFileSync(join(repository, name), chunk, { mode: 0o600 });
+          parts.push({ name, bytes: chunk.length, sha256: sha256(chunk) });
+        }
+        writeFileSync(join(repository, 'chunks.json'), JSON.stringify({
+          schemaVersion: 1,
+          filename,
+          totalBytes: contentBuffer.length,
+          sha256: sha256(contentBuffer),
+          parts,
+        }), { mode: 0o600 });
+      }
+      execFileSync('git', ['-C', repository, 'add', '-A'], { encoding: 'utf8', timeout: 30_000 });
+      execFileSync('git', ['-C', repository, '-c', 'user.name=move-agent-chat', '-c', 'user.email=move-agent-chat@users.noreply.github.com', 'commit', '-m', 'Store encrypted transfer'], {
+        encoding: 'utf8', timeout: 30_000,
+      });
+      execFileSync('git', [...credentialArgs, '-C', repository, 'push', 'origin', 'HEAD'], {
+        encoding: 'utf8', timeout: 180_000, maxBuffer: 10 * 1024 * 1024,
+      });
+      return gistId;
+    } catch (error) {
+      if (gistId) {
+        try { this.delete(gistId); } catch { /* report the original transport failure */ }
+      }
+      throw error;
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+}
+
+function withRetries<T>(operation: () => T): T {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try { return operation(); } catch (error) {
+      lastError = error;
+      if (attempt < 3) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, attempt * 2_000);
+    }
+  }
+  throw lastError;
 }
 
 export class MemoryTransferStore implements TransferStore {
