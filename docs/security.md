@@ -1,133 +1,67 @@
-# Security Model
+# Security model
 
-`move-agent-chat` is designed to move agent chat state without copying account
-credentials or machine-wide configuration. It still moves transcripts, and
-transcripts can contain sensitive content.
+`move-agent-chat` transfers Codex transcripts, which may contain sensitive prompts, tool calls, command output, paths, and repository metadata. It never treats encryption as evidence that a transcript is safe to disclose.
 
-## Data That Leaves The Machine
+## Trust boundaries
 
-For Codex transfer, the uploaded payload is one file named `session.bin`.
+- Both devices are owned and trusted by the same user.
+- Both use an authenticated GitHub account that the user trusts for transport.
+- Device private keys and local Codex homes are protected by the local OS account.
+- GitHub Gists are an unlisted transport, not a private-storage access-control boundary.
+- Anyone who controls a destination private key can decrypt uploads addressed to that device.
 
-Before upload, the bundle is:
+## Device identity
 
-1. packed as JSON
-2. gzip-compressed
-3. encrypted locally with AES-256-GCM
-4. base64-encoded for GitHub Gist transport
+Registration generates an X25519 key pair. The private PKCS#8 key is written only to `~/.move-agent-chat/device.json` with restrictive permissions where supported. The published device card contains the name, public SPKI key, creation time, and SHA-256-derived device ID.
 
-The uploaded Gist contains only the encrypted payload. It does not contain the
-AES key unless the transfer code itself is pasted into the Gist by the user.
+A device name cannot silently resolve to two public keys. Duplicate names are rejected, and an existing local identity cannot be renamed by repeating registration.
 
-## Transfer Code Sensitivity
+## Inbox encryption
 
-The `mc_...` transfer code contains:
+Each upload uses a fresh ephemeral X25519 key. The sender and destination derive a shared secret, then HKDF-SHA-256 derives an AES-256-GCM key with a protocol-specific info label and random salt. The envelope contains the ephemeral public key, salt, IV, authentication tag, ciphertext, recipient/source fingerprints, thread ID, and plaintext hash.
 
-- the AES-256-GCM key
-- the Gist id
+The plaintext is a gzip-compressed bundle. The destination checks recipient identity, AES-GCM authentication, plaintext hash, bundle schema, rollout and asset hashes, UUIDs, JSONL structure, ordinals, size limits, and safe asset paths before writing.
 
-Anyone with the code can download and decrypt the bundle while the Gist exists.
-Treat the code like a temporary secret. Send it only through a channel you trust,
-and avoid leaving it in long-lived public logs.
+GitHub sees ciphertext and minimal routing metadata: source/destination device fingerprints, thread ID, and creation time. It does not receive a private key or symmetric transfer code.
 
-## GitHub Gist Boundary
+Recipient encryption provides confidentiality and ciphertext integrity, not cryptographic sender signatures. Inbox discovery relies on the authenticated GitHub account owning the Gist; treat a compromised GitHub account as able to inject or delete uploads, though it still cannot decrypt an existing upload without the destination private key.
 
-The tool uses `gh gist create` without `--public`. GitHub CLI creates secret
-Gists by default, meaning they are unlisted but accessible to anyone with the
-URL.
+## Included data
 
-This means:
+- selected rollout JSONL and only the recursively referenced complete history-base prefixes;
+- bounded native thread metadata;
+- generated images owned by that thread;
+- bounded project/Git inventory evidence.
 
-- GitHub receives the encrypted `session.bin`.
-- GitHub does not receive the transfer key from this tool.
-- The destination machine deletes the Gist after a successful pull or import.
-- If deletion fails, the CLI and UI report the Gist id so it can be deleted
-  manually.
+Excluded:
 
-Secret Gists are not an access-control boundary equivalent to private storage.
-They are a transport convenience for encrypted blobs.
+- Codex `auth.json`, API keys, tokens, cookies, global config, secrets directories;
+- memories, logs, caches, browser state, Computer Use state;
+- shell snapshots and environment variables;
+- arbitrary repository/project file contents;
+- unrelated threads and SQLite rows.
 
-## Data Included In Codex Bundles
+Exclusion does not remove secrets already printed into the selected transcript.
 
-Included:
+## Import safety
 
-- Codex transcript JSONL
-- matching `session_index.jsonl` rows
-- matching shell snapshots
-- generated images for Codex Desktop
-- metadata needed to register the thread locally
+- Inspection is read-only and separate from import.
+- Import requires a token bound to the upload, destination transcript, selected project snapshot, candidate list, and writer-lock state.
+- Same-ID history must be identical or exact-prefix related. Diverged history has no force or auto-merge operation.
+- Existing writer locks block same-ID mutation.
+- Writes use same-directory temporary files and atomic rename.
+- Existing destination project, pin, section, name, archive, and unrelated relations are not replaced.
+- Project/Git inspection never authorizes Git or filesystem mutation.
+- Successful local import and remote Gist deletion are reported independently.
 
-The transcript may include:
+## GitHub and `gh`
 
-- user prompts
-- assistant responses
-- tool calls and tool outputs
-- command output
-- cwd values and git metadata
-- summaries and developer instructions stored by Codex
+The tool executes `gh api`, `gh gist create`, `gh gist view`, and `gh gist delete` without a shell. A compromised `gh` installation or GitHub account can deny service, replace public device cards, or delete uploads. Recipient encryption prevents an attacker with only a Gist URL from reading the payload, but it cannot protect against a compromised destination private key or local OS account.
 
-## Data Excluded From Codex Bundles
+## Legacy transfer codes
 
-Excluded by design:
+The earlier manual CLI path uses AES-256-GCM with a symmetric key embedded in an `mc_...` transfer code. Anyone holding that code can decrypt the matching Gist while it exists. The agent-first inbox does not use transfer codes and should be preferred for normal Mac/Desktop operation.
 
-- `auth.json`
-- API tokens and login cookies stored outside the transcript
-- full `config.toml`
-- plugin caches
-- Codex app logs
-- unrelated sessions
-- whole home directories
+## Non-goals
 
-This does not guarantee there are no secrets in the transcript. If a previous
-prompt or command output printed a secret, that secret is part of the chat state
-and can be transferred.
-
-## Local UI Boundary
-
-`move-agent-chat ui` binds to `127.0.0.1` by default.
-
-The UI:
-
-- lists local Codex sessions through the helper process
-- asks the helper to pack, encrypt, upload, download, decrypt, preview, and
-  import
-- displays decrypted metadata after the local helper verifies the transfer code
-- does not store transfer codes beyond the browser page state
-
-Do not bind the UI to a public network interface unless you are intentionally
-placing the helper behind your own access controls.
-
-## Native Import Safety
-
-Native Codex import writes into the selected Codex home. It refuses to overwrite
-an existing transcript with the same thread id unless `--force` is used.
-
-Bundle file paths are validated before writing:
-
-- absolute paths are rejected
-- `..` traversal is rejected
-- restored assets are limited to known bundle paths
-
-SQLite registration is best-effort. A SQLite failure should not corrupt the
-transcript import, and the transcript remains available on disk.
-
-## Threats This Does Not Solve
-
-This tool does not solve:
-
-- malicious local users on the same machine
-- compromised GitHub accounts or `gh` installations
-- transfer codes pasted into public chat, logs, or issue trackers
-- secrets already present inside the transcript
-- future Codex storage schema changes
-- remote access to the localhost UI if it is bound outside loopback
-
-## Operational Rules
-
-Recommended default behavior:
-
-- use `move-agent-chat codex push --current` from the source machine
-- send the pull command only to the destination machine
-- use preview before import when receiving an old or unexpected code
-- use `--mode handoff` when you only need continuity context
-- use native mode when you want the thread to appear in Codex history
-- delete the Gist manually if automatic cleanup reports a failure
+This tool does not defend against malicious local users, compromised OS accounts, private keys copied off-device, secrets already present in a transcript, future Codex schema changes, or repository conflicts accepted incorrectly by the user/agent.

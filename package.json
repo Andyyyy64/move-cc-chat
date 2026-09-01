@@ -1,39 +1,46 @@
 {
   "name": "move-agent-chat",
-  "version": "0.1.0",
-  "description": "Move agent chat sessions between machines",
+  "version": "0.2.0",
+  "description": "Conflict-aware local Codex thread transfer for agents and people",
   "type": "module",
   "files": [
+    ".agents/plugins/marketplace.json",
     "codex-plusplus/**/*",
     "docs/**/*.md",
     "dist/**/*.js",
     "dist/**/*.d.ts",
     "!dist/__tests__",
-    "scripts/**/*.mjs"
+    "scripts/**/*.mjs",
+    "plugins/move-agent-chat/**/*"
   ],
   "bin": {
     "move-agent-chat": "./dist/cli.js",
-    "move-chat": "./dist/cli.js"
+    "move-chat": "./dist/cli.js",
+    "move-agent-chat-mcp": "./dist/mcp.js"
   },
   "scripts": {
-    "build": "tsc",
-    "dev": "tsx src/cli.ts",
+    "build": "tsc && node scripts/build-plugin.mjs",
+    "dev": "npm run build && node dist/cli.js",
     "install:codexpp-tweak": "node scripts/install-codexpp-tweak.mjs",
     "start": "node dist/cli.js",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "vitest run src",
+    "test:watch": "vitest src",
+    "mcp": "node dist/mcp.js"
   },
   "dependencies": {
     "@clack/prompts": "^1.1.0",
-    "commander": "^13.1.0"
+    "@modelcontextprotocol/server": "^2.0.0",
+    "commander": "^13.1.0",
+    "zod": "^4.5.4"
   },
   "devDependencies": {
-    "@types/node": "^20.0.0",
-    "tsx": "^4.19.0",
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@types/node": "^22.20.1",
+    "esbuild": "^0.28.2",
     "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
+    "vitest": "^4.1.11"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.13.0"
   }
 }
