@@ -29,7 +29,7 @@ import {
 } from 'node:path';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const MAX_ROLLOUT_BYTES = 100 * 1024 * 1024;
+const MAX_ROLLOUT_BYTES = 512 * 1024 * 1024;
 const MAX_ASSET_BYTES = 100 * 1024 * 1024;
 const MAX_DIRECTORY_ENTRIES = 2_000;
 const MAX_HASHED_FILE_BYTES = 1024 * 1024;

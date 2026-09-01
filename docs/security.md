@@ -58,6 +58,8 @@ Exclusion does not remove secrets already printed into the selected transcript.
 
 The tool executes `gh api`, `gh gist create`, `gh gist view`, and `gh gist delete` without a shell. A compromised `gh` installation or GitHub account can deny service, replace public device cards, or delete uploads. Recipient encryption prevents an attacker with only a Gist URL from reading the payload, but it cannot protect against a compromised destination private key or local OS account.
 
+Inbox listing uses small bounded API pages with retry/backoff. Encrypted envelopes above the direct API threshold are written by creating a tiny secret Gist and pushing through authenticated Git. Large envelopes are split into 48 MiB-or-smaller blobs inside that one Gist repository; `chunks.json` records every part hash, order, total size, and full-payload hash for reconstruction.
+
 ## Legacy transfer codes
 
 The earlier manual CLI path uses AES-256-GCM with a symmetric key embedded in an `mc_...` transfer code. Anyone holding that code can decrypt the matching Gist while it exists. The agent-first inbox does not use transfer codes and should be preferred for normal Mac/Desktop operation.
